@@ -16,14 +16,14 @@ button{border:0;border-radius:999px;background:var(--accent);color:#24170f;paddi
 </style></head>
 <body><main>
 <div class="brand"><div class="logo">M</div>ModMind AI</div>
-<h1>Твой модпак.<br>Твои правила.</h1><p class="sub">Опиши мир, который хочешь получить. Найдём совместимые моды на Modrinth и соберём архив с настоящими файлами.</p>
+<h1>Твой модпак.<br>Твои правила.</h1><p class="sub">Опиши желаемый мир. ModMind найдёт моды на Modrinth, проверит совместимость и соберёт ZIP с настоящими файлами. Обязательные зависимости добавятся автоматически.</p>
 <section class="card">
 <label for="prompt">Какой модпак создаём?</label><textarea id="prompt" placeholder="Например: приключения, новые биомы, боссы, магия и красивые шейдеры..."></textarea>
 <div class="grid"><div><label for="mc">Версия Minecraft</label><select id="mc"><option>1.21.1</option><option>1.20.1</option><option>1.20.4</option><option>1.19.2</option><option>1.18.2</option></select></div>
 <div><label for="loader">Загрузчик</label><select id="loader"><option value="fabric">Fabric</option><option value="forge">Forge</option><option value="neoforge">NeoForge</option><option value="quilt">Quilt</option></select></div></div>
 <button id="search">Найти моды</button><div class="status" id="status"></div><div class="mods" id="mods"></div>
 <button id="build" hidden>Собрать ZIP выбранных модов</button>
-</section><p class="sub">MVP · Бесплатный подбор без платного AI API · Каталог Modrinth</p>
+</section><p class="sub">Бесплатный поиск по каталогу Modrinth · Без платного AI API · Автодобавление обязательных зависимостей</p>
 </main>
 <script>
 const $=id=>document.getElementById(id);let found=[];
@@ -46,7 +46,7 @@ $("build").onclick=async()=>{
  const ids=[...$("mods").querySelectorAll("input:checked")].map(x=>x.dataset.id);if(!ids.length){$("status").textContent="Выбери хотя бы один мод.";return}
  $("build").disabled=true;$("status").textContent="Скачиваем настоящие файлы модов и собираем ZIP…";
  try{const r=await fetch("/api/build",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:"ModMind-Pack",minecraft_version:$("mc").value,loader:$("loader").value,project_ids:ids})});
- if(!r.ok)throw Error((await r.json()).detail||"Ошибка сборки");const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="ModMind-Pack.zip";a.click();URL.revokeObjectURL(url);$("status").textContent="Готово! ZIP скачан. Внутри — папка mods и manifest.json.";
+ if(!r.ok)throw Error((await r.json()).detail||"Ошибка сборки");const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="ModMind-Pack.zip";a.click();URL.revokeObjectURL(url);$("status").textContent="Готово! ZIP скачан. Внутри — папка mods и manifest.json. Обязательные зависимости включены автоматически.";
  }catch(e){$("status").textContent="Не удалось собрать архив: "+e.message}finally{$("build").disabled=false}
 };
 </script></body></html>
