@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import tempfile
 import zipfile
@@ -18,16 +19,18 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 MODRINTH_API = "https://api.modrinth.com/v2"
-USER_AGENT = "ModMindAI/0.2.0 (https://github.com/Sp1KLe/ModMind-AI)"
+GEMINI_API = "https://generativelanguage.googleapis.com/v1beta"
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+USER_AGENT = "ModMindAI/0.3.0 (https://github.com/Sp1KLe/ModMind-AI)"
 MAX_DOWNLOAD_BYTES = 450 * 1024 * 1024
 MAX_PROJECTS = 80
 ALLOWED_DOWNLOAD_HOSTS = {"cdn.modrinth.com"}
 LOADERS = {"fabric", "forge", "neoforge", "quilt"}
 
-app = FastAPI(title="ModMind AI", version="0.2.0", description="Free Minecraft modpack builder")
+app = FastAPI(title="ModMind AI", version="0.3.0", description="Minecraft modpack builder with optional Gemini planning")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restrict this to the app domain before production.
+    allow_origins=["*"],  # Restrict to the deployed app origin before public production use.
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
@@ -41,9 +44,20 @@ class BuildRequest(BaseModel):
     project_ids: list[str] = Field(min_length=1, max_length=40)
 
 
+class PlanRequest(BaseModel):
+    description: str = Field(min_length=4, max_length=600)
+
+
 def clean_name(value: str) -> str:
     value = re.sub(r"[^\w .-]", "", value, flags=re.UNICODE).strip()
     return (value or "ModMind Pack")[:64]
+
+
+def fallback_queries(description: str) -> list[str]:
+    words = re.findall(r"[\w-]{4,}", description.lower(), flags=re.UNICODE)
+    stop = {"хочу", "нужно", "чтобы", "моды", "модпак", "майнкрафт", "сделай", "добавь", "играть", "minecraft"}
+    unique = list(dict.fromkeys(word for word in words if word not in stop))
+    return [description[:100], *unique[:5]]
 
 
 def modrinth_headers() -> dict[str, str]:
@@ -56,9 +70,80 @@ async def api_get(client: httpx.AsyncClient, path: str, params: dict[str, Any] |
     return response.json()
 
 
+async def gemini_plan(description: str) -> list[str]:
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return fallback_queries(description)
+
+    prompt = (
+        "You help assemble Minecraft modpacks. Convert the user's description into 3 to 6 short, "
+        "specific English search queries for finding real Minecraft mods in the Modrinth catalog. "
+        "Do not invent mod names, project IDs, URLs, or claim that a mod exists. Include distinct "
+        "themes/features where useful. Return ONLY JSON: "
+        '{"search_queries":["query 1","query 2"],"summary":"one short Russian sentence"}.\n'
+        f"User description: {description}"
+    )
+    payload = {
+        "systemInstruction": {
+            "parts": [{"text": "You are ModMind AI's modpack planning assistant. Output valid JSON only."}]
+        },
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
+    }
+    async with httpx.AsyncClient(timeout=httpx.Timeout(25, connect=10)) as client:
+        response = await client.post(
+            f"{GEMINI_API}/models/{GEMINI_MODEL}:generateContent",
+            headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+            json=payload,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    candidates = data.get("candidates") or []
+    parts = (candidates[0].get("content") or {}).get("parts") or []
+    raw = "".join(part.get("text", "") for part in parts)
+    parsed = json.loads(raw)
+    queries = parsed.get("search_queries", [])
+    if not isinstance(queries, list):
+        raise ValueError("Gemini returned an invalid search_queries value")
+    clean = []
+    for query in queries:
+        if isinstance(query, str):
+            query = re.sub(r"\s+", " ", query).strip()[:80]
+            if query and query.lower() not in {item.lower() for item in clean}:
+                clean.append(query)
+        if len(clean) == 6:
+            break
+    return clean or fallback_queries(description)
+
+
 @app.get("/api/health")
 async def health():
-    return {"ok": True, "app": "ModMind AI", "version": app.version}
+    return {
+        "ok": True,
+        "app": "ModMind AI",
+        "version": app.version,
+        "gemini_configured": bool(os.getenv("GEMINI_API_KEY")),
+    }
+
+
+@app.post("/api/plan")
+async def plan_modpack(request: PlanRequest):
+    try:
+        queries = await gemini_plan(request.description)
+        return {
+            "search_queries": queries,
+            "ai_enabled": bool(os.getenv("GEMINI_API_KEY")),
+            "message": "Gemini подготовил поисковые запросы." if os.getenv("GEMINI_API_KEY") else
+                       "Gemini не настроен на сервере: используем бесплатный поиск по ключевым словам.",
+        }
+    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        # A Gemini outage or exhausted free quota must not make the modpack builder unusable.
+        return {
+            "search_queries": fallback_queries(request.description),
+            "ai_enabled": False,
+            "message": f"Gemini временно недоступен; включён обычный поиск ({type(exc).__name__}).",
+        }
 
 
 @app.get("/api/search")
@@ -124,14 +209,12 @@ async def build_pack(request: BuildRequest):
     pending = list(selected_ids)
     total_bytes = 0
     manifest_mods: list[dict[str, Any]] = []
-    archive_path: Path | None = None
 
     try:
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(45, connect=15),
             follow_redirects=True,
         ) as client:
-            # Resolve required dependencies recursively instead of making users add them manually.
             while pending:
                 project_id = pending.pop(0)
                 if project_id in included:
@@ -172,6 +255,9 @@ async def build_pack(request: BuildRequest):
 
                         async with client.stream("GET", file_info["url"], headers=modrinth_headers()) as response:
                             response.raise_for_status()
+                            final_url = urlparse(str(response.url))
+                            if final_url.scheme != "https" or final_url.hostname not in ALLOWED_DOWNLOAD_HOSTS:
+                                raise HTTPException(422, f"Unexpected redirect host for {project_id}")
                             chunks = []
                             async for chunk in response.aiter_bytes():
                                 total_bytes += len(chunk)
