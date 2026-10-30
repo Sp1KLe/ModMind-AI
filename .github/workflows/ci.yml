@@ -1,4 +1,4 @@
-name: Python checks
+name: Python checks and app artifact
 
 on:
   push:
@@ -7,13 +7,27 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  test-and-package:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements.txt pytest
-      - run: python -m compileall -q app
-      - run: pytest -q
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Compile backend
+        run: python -m compileall -q app
+      - name: Run tests
+        run: pytest -q
+      - name: Package ModMind AI
+        run: |
+          mkdir -p dist
+          zip -r dist/ModMind-AI-webapp.zip app web requirements.txt README.md .env.example
+      - name: Upload application artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ModMind-AI-webapp
+          path: dist/ModMind-AI-webapp.zip
+          if-no-files-found: error
+          retention-days: 14
