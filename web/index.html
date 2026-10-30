@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#17120f"><title>ModMind AI</title>
+<style>
+:root{color-scheme:dark;--bg:#17120f;--panel:#241c17;--panel2:#30241d;--text:#f5e9dd;--muted:#bba99a;--accent:#d6a77b;--line:#49372b}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 80% 0,#49301f 0,transparent 35%),var(--bg);color:var(--text);font:16px system-ui, sans-serif}
+main{max-width:900px;margin:auto;padding:32px 18px 70px}.brand{display:flex;align-items:center;gap:12px;font-weight:800;font-size:22px}.logo{width:42px;height:42px;border-radius:15px;background:var(--accent);color:#281b12;display:grid;place-items:center;font-size:23px}
+h1{font-size:clamp(30px,6vw,48px);line-height:1.05;margin:42px 0 12px}.sub{color:var(--muted);max-width:620px;line-height:1.6}
+.card{background:color-mix(in srgb,var(--panel) 94%,transparent);border:1px solid var(--line);border-radius:24px;padding:22px;margin-top:24px;box-shadow:0 16px 50px #0003}
+label{display:block;color:var(--muted);font-size:14px;margin:14px 0 8px}textarea,input,select{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:14px;color:var(--text);padding:13px;font:inherit}textarea{min-height:100px;resize:vertical}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+button{border:0;border-radius:999px;background:var(--accent);color:#24170f;padding:13px 20px;font-weight:750;font-size:15px;cursor:pointer;margin-top:18px}button:disabled{opacity:.55;cursor:wait}.secondary{background:var(--panel2);color:var(--text);border:1px solid var(--line);margin:6px 6px 0 0}
+.status{color:var(--muted);white-space:pre-wrap;margin-top:14px}.mods{display:grid;gap:10px;margin-top:16px}.mod{display:flex;gap:12px;align-items:center;background:var(--panel2);padding:12px;border-radius:16px}.mod img{width:42px;height:42px;border-radius:12px;object-fit:cover}.mod small{display:block;color:var(--muted);margin-top:3px}.mod input{width:auto}
+@media(max-width:560px){.grid{grid-template-columns:1fr}main{padding-top:20px}.card{padding:17px}}
+</style></head>
+<body><main>
+<div class="brand"><div class="logo">M</div>ModMind AI</div>
+<h1>Твой модпак.<br>Твои правила.</h1><p class="sub">Опиши мир, который хочешь получить. Найдём совместимые моды на Modrinth и соберём архив с настоящими файлами.</p>
+<section class="card">
+<label for="prompt">Какой модпак создаём?</label><textarea id="prompt" placeholder="Например: приключения, новые биомы, боссы, магия и красивые шейдеры..."></textarea>
+<div class="grid"><div><label for="mc">Версия Minecraft</label><select id="mc"><option>1.21.1</option><option>1.20.1</option><option>1.20.4</option><option>1.19.2</option><option>1.18.2</option></select></div>
+<div><label for="loader">Загрузчик</label><select id="loader"><option value="fabric">Fabric</option><option value="forge">Forge</option><option value="neoforge">NeoForge</option><option value="quilt">Quilt</option></select></div></div>
+<button id="search">Найти моды</button><div class="status" id="status"></div><div class="mods" id="mods"></div>
+<button id="build" hidden>Собрать ZIP выбранных модов</button>
+</section><p class="sub">MVP · Бесплатный подбор без платного AI API · Каталог Modrinth</p>
+</main>
+<script>
+const $=id=>document.getElementById(id);let found=[];
+function terms(text){return text.toLowerCase().replace(/[^\p{L}\p{N} ]/gu," ").split(/\s+/).filter(x=>x.length>3)}
+$("search").onclick=async()=>{
+ const q=$("prompt").value.trim();if(!q){$("status").textContent="Сначала опиши желаемый модпак.";return}
+ $("search").disabled=true;$("status").textContent="Ищем совместимые моды на Modrinth…";$("mods").innerHTML="";$("build").hidden=true;
+ try{
+  const words=terms(q);const queries=[...new Set([q,...words.slice(0,5)])].slice(0,5);let all=[];
+  for(const query of queries){const p=new URLSearchParams({query,minecraft_version:$("mc").value,loader:$("loader").value,limit:"8"});const r=await fetch("/api/search?"+p);if(!r.ok)throw Error(await r.text());all.push(...(await r.json()).mods)}
+  found=[...new Map(all.map(m=>[m.id,m])).values()].slice(0,20);
+  if(!found.length){$("status").textContent="Ничего не найдено. Попробуй более короткое описание или другую версию.";return}
+  $("status").textContent="Найдено модов: "+found.length+". Проверь список и отметь нужные.";
+  $("mods").innerHTML=found.map((m,i)=>'<label class="mod"><input type="checkbox" checked data-id="'+m.id+'">'+(m.icon_url?'<img src="'+m.icon_url+'" alt="">':'')+'<span><b>'+escapeHtml(m.title)+'</b><small>'+escapeHtml(m.description||"")+'</small></span></label>').join("");
+  $("build").hidden=false;
+ }catch(e){$("status").textContent="Ошибка: "+e.message}finally{$("search").disabled=false}
+};
+function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+$("build").onclick=async()=>{
+ const ids=[...$("mods").querySelectorAll("input:checked")].map(x=>x.dataset.id);if(!ids.length){$("status").textContent="Выбери хотя бы один мод.";return}
+ $("build").disabled=true;$("status").textContent="Скачиваем настоящие файлы модов и собираем ZIP…";
+ try{const r=await fetch("/api/build",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:"ModMind-Pack",minecraft_version:$("mc").value,loader:$("loader").value,project_ids:ids})});
+ if(!r.ok)throw Error((await r.json()).detail||"Ошибка сборки");const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="ModMind-Pack.zip";a.click();URL.revokeObjectURL(url);$("status").textContent="Готово! ZIP скачан. Внутри — папка mods и manifest.json.";
+ }catch(e){$("status").textContent="Не удалось собрать архив: "+e.message}finally{$("build").disabled=false}
+};
+</script></body></html>
